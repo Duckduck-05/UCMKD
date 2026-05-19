@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Checkpoints & logs
+ckpts/
+logs/
+logs_challenging/
+wandb/
+results/
+
+# Data (large files, not tracked)
+*.pkl
+*.npy
+
+# Misc
+.DS_Store
