@@ -29,7 +29,6 @@ class BasicBlock(nn.Module):
             raise ValueError('BasicBlock only supports groups=1 and base_width=64')
         if dilation > 1:
             raise NotImplementedError("Dilation > 1 not supported in BasicBlock")
-        # Both self.conv1 and self.downsample layers downsample the input when stride != 1
         self.conv1 = conv3x3(inplanes, planes, stride)
         self.bn1 = norm_layer(planes)
         self.relu = nn.ReLU(inplace=True)
@@ -59,12 +58,13 @@ class BasicBlock(nn.Module):
 
 class ResNet(nn.Module):
 
-    def __init__(self, block, layers, modality, num_classes=1000, num_frame=3, pool='avgpool', zero_init_residual=False,
-                 groups=1, width_per_group=64, replace_stride_with_dilation=None,
-                 norm_layer=None):
+    def __init__(self, block, layers, modality, num_classes=309, num_frame=3, pool='avgpool',
+                 zero_init_residual=False, groups=1, width_per_group=64,
+                 replace_stride_with_dilation=None, norm_layer=None):
         super(ResNet, self).__init__()
         self.modality = modality
         self.pool = pool
+        self.num_frame = num_frame
         if norm_layer is None:
             norm_layer = nn.BatchNorm2d
         self._norm_layer = norm_layer
@@ -72,22 +72,20 @@ class ResNet(nn.Module):
         self.inplanes = 64
         self.dilation = 1
         if replace_stride_with_dilation is None:
-            # each element in the tuple indicates if we should replace
-            # the 2x2 stride with a dilated convolution instead
             replace_stride_with_dilation = [False, False, False]
         if len(replace_stride_with_dilation) != 3:
             raise ValueError("replace_stride_with_dilation should be None "
-                             "or a 3-element tuple, got {}".format(replace_stride_with_dilation))
+                             "or a 3-element tuple, got {}\n".format(replace_stride_with_dilation))
         self.groups = groups
         self.base_width = width_per_group
+
         if modality == 'audio':
-            self.conv1 = nn.Conv2d(1, self.inplanes, kernel_size=7, stride=2, padding=3,
-                                   bias=False)
+            self.conv1 = nn.Conv2d(1, self.inplanes, kernel_size=7, stride=2, padding=3, bias=False)
         elif modality == 'visual':
-            self.conv1 = nn.Conv2d(3, self.inplanes, kernel_size=7, stride=2, padding=3,
-                                   bias=False)
+            self.conv1 = nn.Conv2d(3 * num_frame, self.inplanes, kernel_size=7, stride=2, padding=3, bias=False)
         else:
             raise NotImplementedError('Incorrect modality, should be audio or visual but got {}'.format(modality))
+
         self.bn1 = norm_layer(self.inplanes)
         self.relu = nn.ReLU(inplace=True)
         self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
@@ -98,18 +96,9 @@ class ResNet(nn.Module):
                                        dilate=replace_stride_with_dilation[1])
         self.layer4 = self._make_layer(block, 512, layers[3], stride=2,
                                        dilate=replace_stride_with_dilation[2])
-        # if self.pool == 'avgpool':
-        #     self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
-        #
-        #     self.fc = nn.Linear(512 * block.expansion, num_classes)  # 8192
 
-        if modality == 'audio':
-            self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
-            self.fc = nn.Linear(512 * block.expansion, num_classes)  # 8192
-        elif modality == 'visual':
-            self.avgpool = nn.AdaptiveAvgPool3d(1)
-            self.fc = nn.Linear(512 * block.expansion, num_classes)
-
+        self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
+        self.fc = nn.Linear(512 * block.expansion, num_classes)
 
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
@@ -118,9 +107,6 @@ class ResNet(nn.Module):
                 nn.init.normal_(m.weight, mean=1, std=0.02)
                 nn.init.constant_(m.bias, 0)
 
-        # Zero-initialize the last BN in each residual branch,
-        # so that the residual branch starts with zeros, and each residual block behaves like an identity.
-        # This improves the model by 0.2~0.3% according to https://arxiv.org/abs/1706.02677
         if zero_init_residual:
             for m in self.modules():
                 if isinstance(m, Bottleneck):
@@ -152,15 +138,14 @@ class ResNet(nn.Module):
 
         return nn.Sequential(*layers)
 
-    def forward(self, x):
+    def forward_encoder(self, x):
         if self.modality == 'visual':
             (B, C, T, H, W) = x.size()
             x = x.permute(0, 2, 1, 3, 4).contiguous()
-            x = x.view(B * T, C, H, W)
+            x = x.view(B, C * T, H, W)
         else:
             x = x.unsqueeze(1)
-        # x = x.unsqueeze(1)
-        x = x.float()
+
         x = self.conv1(x)
         x = self.bn1(x)
         x = self.relu(x)
@@ -173,23 +158,21 @@ class ResNet(nn.Module):
         f2 = x
         x = self.layer3(x)
         f3 = x
-        x_512 = self.layer4(x)
+        x = self.layer4(x)
         f4 = x
-        # x_512 = x_512.reshape(x_512.shape[0], -1)
-        if self.modality == 'visual':
-            (B3, C, H, W) = x_512.size()
-            x_512 = x_512.view(int(B3/3), -1, C, H, W)
-            x_512 = x_512.permute(0, 2, 1, 3, 4)
-            x_512 = self.avgpool(x_512)
-            x_512 = torch.flatten(x_512, 1)
-            out = self.fc(x_512)
-        else:
-            x_512 = self.avgpool(x_512)
-            x_512 = torch.flatten(x_512, 1)
-            out = self.fc(x_512)
-        # out = self.fc(x_512)
 
-        return out, x_512, [f0, f1, f2, f3, f4]
+        x_512 = self.avgpool(x)
+        feature_vector = x_512.reshape(x_512.shape[0], -1)
+
+        return feature_vector, [f0, f1, f2, f3, f4]
+
+    def forward_head(self, feature_vector):
+        return self.fc(feature_vector)
+
+    def forward(self, x):
+        feature, feature_maps = self.forward_encoder(x)
+        logits = self.forward_head(feature)
+        return logits, feature, feature_maps
 
 
 class Bottleneck(nn.Module):
@@ -201,7 +184,6 @@ class Bottleneck(nn.Module):
         if norm_layer is None:
             norm_layer = nn.BatchNorm2d
         width = int(planes * (base_width / 64.)) * groups
-        # Both self.conv2 and self.downsample layers downsample the input when stride != 1
         self.conv1 = conv1x1(inplanes, width)
         self.bn1 = norm_layer(width)
         self.conv2 = conv3x3(width, width, stride, groups, dilation)
@@ -235,11 +217,216 @@ class Bottleneck(nn.Module):
         return out
 
 
-
 def _resnet(arch, block, layers, modality, num_classes, num_frame):
     model = ResNet(block, layers, modality, num_classes=num_classes, num_frame=num_frame)
     return model
 
+
+class ViTImageNet(nn.Module):
+    """ViT-B/16 for image modality."""
+
+    def __init__(self, num_classes=309, num_frame=1):
+        super().__init__()
+        from torchvision.models import vit_b_16, ViT_B_16_Weights
+
+        self.num_frame = num_frame
+        vit = vit_b_16(weights=ViT_B_16_Weights.IMAGENET1K_V1)
+        vit.heads.head = nn.Linear(768, num_classes)
+        self._vit = vit
+
+    def fc(self, x):
+        return self._vit.heads.head(x)
+
+    def forward_encoder(self, x):
+        if x.dim() == 5:
+            x = x.mean(dim=2)
+        vit = self._vit
+
+        x_emb = vit._process_input(x)
+        n = x_emb.shape[0]
+        cls = vit.class_token.expand(n, -1, -1)
+        h = torch.cat([cls, x_emb], dim=1)
+        h = vit.encoder.dropout(h)
+
+        feats = []
+        for block in vit.encoder.layers:
+            h = block(h)
+            feats.append(h)
+
+        h = vit.encoder.ln(h)
+        cls_token = h[:, 0]
+
+        def _to_2d(feat):
+            patches = feat[:, 1:]
+            B_ = patches.shape[0]
+            return patches.transpose(1, 2).reshape(B_, 768, 14, 14)
+
+        f0 = _to_2d(feats[2])
+        f1 = _to_2d(feats[5])
+        f2 = _to_2d(feats[8])
+        f3 = _to_2d(feats[11])
+        f4 = _to_2d(h)
+
+        return cls_token, [f0, f1, f2, f3, f4]
+
+    def forward_head(self, feature_vector):
+        return self._vit.heads.head(feature_vector)
+
+    def forward(self, x):
+        cls_token, feature_maps = self.forward_encoder(x)
+        logits = self.forward_head(cls_token)
+        return logits, cls_token, feature_maps
+
+
+class ViTLImageNet(nn.Module):
+    """ViT-L/16 for image modality."""
+
+    def __init__(self, num_classes=309, num_frame=1):
+        super().__init__()
+        from torchvision.models import vit_l_16, ViT_L_16_Weights
+
+        self.num_frame = num_frame
+        vit = vit_l_16(weights=ViT_L_16_Weights.IMAGENET1K_V1)
+        vit.heads.head = nn.Linear(1024, num_classes)
+        self._vit = vit
+
+    def fc(self, x):
+        return self._vit.heads.head(x)
+
+    def forward_encoder(self, x):
+        if x.dim() == 5:
+            x = x.mean(dim=2)
+        vit = self._vit
+
+        x_emb = vit._process_input(x)
+        n = x_emb.shape[0]
+        cls = vit.class_token.expand(n, -1, -1)
+        h = torch.cat([cls, x_emb], dim=1)
+        h = vit.encoder.dropout(h)
+
+        feats = []
+        for block in vit.encoder.layers:
+            h = block(h)
+            feats.append(h)
+
+        h = vit.encoder.ln(h)
+        cls_token = h[:, 0]
+
+        def _to_2d(feat):
+            patches = feat[:, 1:]
+            B_ = patches.shape[0]
+            return patches.transpose(1, 2).reshape(B_, 1024, 14, 14)
+
+        f0 = _to_2d(feats[5])
+        f1 = _to_2d(feats[11])
+        f2 = _to_2d(feats[17])
+        f3 = _to_2d(feats[23])
+        f4 = _to_2d(h)
+
+        return cls_token, [f0, f1, f2, f3, f4]
+
+    def forward_head(self, feature_vector):
+        return self._vit.heads.head(feature_vector)
+
+    def forward(self, x):
+        cls_token, feature_maps = self.forward_encoder(x)
+        logits = self.forward_head(cls_token)
+        return logits, cls_token, feature_maps
+
+
+class ViTAudioNet(nn.Module):
+    """Audio Spectrogram Transformer (vit_small_patch16)."""
+
+    def __init__(self, args, num_classes=309):
+        super().__init__()
+        import timm
+
+        self.target_H = 256
+        self.target_W = 1024
+
+        self.backbone = timm.create_model(
+            'vit_small_patch16_224',
+            pretrained=True,
+            in_chans=1,
+            img_size=(self.target_H, self.target_W),
+            num_classes=0,
+        )
+        vit_dim = self.backbone.embed_dim
+
+        self.proj = nn.Sequential(
+            nn.Linear(vit_dim, 768),
+            nn.BatchNorm1d(768),
+            nn.ReLU(inplace=True),
+        )
+        self.fc = nn.Linear(768, num_classes)
+
+    def forward_encoder(self, x):
+        if x.dim() == 3:
+            x = x.unsqueeze(1)
+        x = F.interpolate(x, size=(self.target_H, self.target_W), mode='bilinear', align_corners=False)
+
+        tokens = self.backbone.forward_features(x)
+        cls_token = tokens[:, 0, :]
+        feature = self.proj(cls_token)
+
+        patch_tokens = tokens[:, 1:, :]
+        B, N, D = patch_tokens.shape
+        fmap = patch_tokens.transpose(1, 2).reshape(B, D, 16, 64)
+        feature_maps = [fmap, fmap, fmap, fmap, fmap]
+
+        return feature, feature_maps
+
+    def forward_head(self, feature):
+        return self.fc(feature)
+
+    def forward(self, x):
+        feature, feature_maps = self.forward_encoder(x)
+        logits = self.forward_head(feature)
+        return logits, feature, feature_maps
+
+
+class ViTLAudioNet(nn.Module):
+    """Audio Spectrogram Transformer (vit_large_patch16)."""
+
+    def __init__(self, args, num_classes=309):
+        super().__init__()
+        import timm
+
+        self.target_H = 256
+        self.target_W = 1024
+
+        self.backbone = timm.create_model(
+            'vit_large_patch16_224',
+            pretrained=True,
+            in_chans=1,
+            img_size=(self.target_H, self.target_W),
+            num_classes=0,
+        )
+        vit_dim = self.backbone.embed_dim
+        self.fc = nn.Linear(vit_dim, num_classes)
+
+    def forward_encoder(self, x):
+        if x.dim() == 3:
+            x = x.unsqueeze(1)
+        x = F.interpolate(x, size=(self.target_H, self.target_W), mode='bilinear', align_corners=False)
+
+        tokens = self.backbone.forward_features(x)
+        cls_token = tokens[:, 0, :]
+
+        patch_tokens = tokens[:, 1:, :]
+        B, N, D = patch_tokens.shape
+        fmap = patch_tokens.transpose(1, 2).reshape(B, D, 16, 64)
+        feature_maps = [fmap, fmap, fmap, fmap, fmap]
+
+        return cls_token, feature_maps
+
+    def forward_head(self, feature):
+        return self.fc(feature)
+
+    def forward(self, x):
+        feature, feature_maps = self.forward_encoder(x)
+        logits = self.forward_head(feature)
+        return logits, feature, feature_maps
 
 
 class AudioNet(nn.Module):
@@ -248,17 +435,41 @@ class AudioNet(nn.Module):
     def __init__(self, args):
         super(AudioNet, self).__init__()
         self.arch = args.audio_arch
-        if self.arch == 'resnet18':
-            layers = [2, 2, 2, 2]
-        if self.arch == 'resnet50':
-            layers = [3, 4, 6, 3]
-        self.backbone = _resnet('resnet_x', BasicBlock, layers, modality='audio', num_classes=50, num_frame=args.num_frame)
+
+        if self.arch == 'vit_l_16':
+            self.backbone = ViTLAudioNet(args, num_classes=309)
+            self._feature_dim = 1024
+        elif self.arch == 'vit_s_16':
+            self.backbone = ViTAudioNet(args, num_classes=309)
+            self._feature_dim = 768
+        else:
+            if self.arch == 'resnet18':
+                layers = [2, 2, 2, 2]
+            elif self.arch == 'resnet50':
+                layers = [3, 4, 6, 3]
+            else:
+                raise ValueError(f'Unknown audio_arch: {self.arch}')
+            self.backbone = _resnet('resnet_x', BasicBlock, layers,
+                                    modality='audio', num_classes=309,
+                                    num_frame=args.num_frame)
+            self._feature_dim = 512
+
+    @property
+    def feature_dim(self):
+        return self._feature_dim
 
     def fc(self, x):
         return self.backbone.fc(x)
 
+    def forward_encoder(self, x):
+        return self.backbone.forward_encoder(x)
+
+    def forward_head(self, feature_vector):
+        return self.backbone.forward_head(feature_vector)
+
     def forward(self, x):
         return self.backbone(x)
+
 
 class FCReg(nn.Module):
     """Convolutional regression"""
@@ -278,23 +489,44 @@ class FCReg(nn.Module):
             return self.bn(x)
         return x
 
+
 class ImageNet(nn.Module):
     """ImageNet"""
 
     def __init__(self, args):
         super(ImageNet, self).__init__()
         self.arch = args.image_arch
-        if self.arch == 'resnet18':
-            layers = [2, 2, 2, 2]
-        if self.arch == 'resnet50':
-            layers = [3, 4, 6, 3]
-        self.backbone = _resnet('resnet_x', BasicBlock, layers, modality='visual', num_classes=50, num_frame=args.num_frame)
+
+        if self.arch == 'vit_l_16':
+            self.backbone = ViTLImageNet(num_classes=309, num_frame=args.num_frame)
+            self._feature_dim = 1024
+        elif self.arch == 'vit_b_16':
+            self.backbone = ViTImageNet(num_classes=309, num_frame=args.num_frame)
+            self._feature_dim = 768
+        else:
+            if self.arch == 'resnet18':
+                layers = [2, 2, 2, 2]
+            elif self.arch == 'resnet50':
+                layers = [3, 4, 6, 3]
+            else:
+                raise ValueError(f'Unknown image_arch: {self.arch}')
+            self.backbone = _resnet('resnet_x', BasicBlock, layers,
+                                    modality='visual', num_classes=309,
+                                    num_frame=args.num_frame)
+            self._feature_dim = 512
+
+    @property
+    def feature_dim(self):
+        return self._feature_dim
 
     def fc(self, x):
         return self.backbone.fc(x)
 
-    def fusion(self, x):
-        return self.fc5(self.fc4(x))
+    def forward_encoder(self, x):
+        return self.backbone.forward_encoder(x)
+
+    def forward_head(self, feature_vector):
+        return self.backbone.forward_head(feature_vector)
 
     def forward(self, x):
         return self.backbone(x)
