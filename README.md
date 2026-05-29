@@ -163,6 +163,7 @@ export WANDB_MODE=online   # or 'offline' / 'disabled'
 | `reviewkd` | ReviewKD (Chen et al., CVPR 2021) |
 | `norm` | NORM (ICLR 2023) |
 
+<!--
 ## Citation
 
 If you find this work useful, please cite:
@@ -173,7 +174,8 @@ If you find this work useful, please cite:
   booktitle = {Proceedings of the 43rd International Conference on Machine Learning (ICML)},
   year      = {2026},
 }
-```
+``` 
+-->
 
 ## License
 
