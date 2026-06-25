@@ -163,19 +163,22 @@ export WANDB_MODE=online   # or 'offline' / 'disabled'
 | `reviewkd` | ReviewKD (Chen et al., CVPR 2021) |
 | `norm` | NORM (ICLR 2023) |
 
-<!--
+
 ## Citation
 
 If you find this work useful, please cite:
 
 ```bibtex
-@inproceedings{ucmkd2026,
-  title     = {Cross-Modal Knowledge Distillation without Paired Data: Theoretical Foundations and Algorithms},
-  booktitle = {Proceedings of the 43rd International Conference on Machine Learning (ICML)},
-  year      = {2026},
+@inproceedings{
+    tran2026crossmodal,
+    title={Cross-Modal Knowledge Distillation without Paired Data: Theoretical Foundation and Algorithm},
+    author={T. Khiem Tran and Anh Duc Chu and Quang Hung Pham and Phi Le Nguyen and Trong Nghia Hoang},
+    booktitle={Forty-third International Conference on Machine Learning},
+    year={2026},
+    url={https://openreview.net/forum?id=z9aetU7Wfl}
 }
 ``` 
--->
+
 
 ## License
 
